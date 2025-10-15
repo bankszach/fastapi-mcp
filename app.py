@@ -26,6 +26,7 @@ app.add_middleware(
 
 # --- Optional API key auth via header x-api-key ---
 API_KEY = os.getenv("API_KEY")
+COMMIT_SHA = os.getenv("COMMIT_SHA", "unknown")
 
 def check_auth(request: Request):
     if not API_KEY:
@@ -87,6 +88,10 @@ async def root():
         "status": "ok",
         "message": "Use POST / for JSON-RPC 2.0 tools.list and tools.call methods.",
     }
+
+@app.get("/version")
+async def version():
+    return {"commit": COMMIT_SHA}
 
 
 @app.post("/")
