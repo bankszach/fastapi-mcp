@@ -80,6 +80,14 @@ TOOL_DEF = {
 async def healthz():
     return {"ok": True}
 
+@app.get("/")
+async def root():
+    return {
+        "name": "FastAPI MCP Server",
+        "status": "ok",
+        "message": "Use POST / for JSON-RPC 2.0 tools.list and tools.call methods.",
+    }
+
 
 @app.post("/")
 async def handle_rpc(request: Request):
