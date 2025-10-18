@@ -1,4 +1,3 @@
-
 import logging
 import os
 from typing import Any, Dict, Optional
@@ -9,15 +8,19 @@ from pydantic import BaseModel
 from jsonschema import validate, ValidationError
 
 from tool_impl import get_time_impl
-from mcp_facade import mcp_asgi_app
+from mcp_facade import mcp_asgi_app, mcp_admin
 
 logger = logging.getLogger("mcp")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
-app = FastAPI(title="FastAPI MCP Server")
+app = FastAPI(title="fastapi-mcp")
 
-# Serve MCP over Server-Sent Events at /mcp for LM Studio clients.
+# True MCP endpoint:
 app.mount("/mcp", mcp_asgi_app)
+
+# Optional manual reload endpoint for downstream catalog
+if mcp_admin:
+    app.include_router(mcp_admin)
 
 # --- CORS (relax in dev; restrict in prod) ---
 app.add_middleware(
