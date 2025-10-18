@@ -9,11 +9,15 @@ from pydantic import BaseModel
 from jsonschema import validate, ValidationError
 
 from tool_impl import get_time_impl
+from mcp_facade import mcp_asgi_app
 
 logger = logging.getLogger("mcp")
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 app = FastAPI(title="FastAPI MCP Server")
+
+# Serve MCP over Server-Sent Events at /mcp for LM Studio clients.
+app.mount("/mcp", mcp_asgi_app)
 
 # --- CORS (relax in dev; restrict in prod) ---
 app.add_middleware(
