@@ -5,6 +5,7 @@
 substitutions:
   _REGION: "us-central1"
   _SERVICE: "mcp-clock"
+  _SERVICE_URL: "https://YOUR_CLOUD_RUN_URL"
 
 steps:
   - name: "gcr.io/cloud-builders/docker"
@@ -24,5 +25,12 @@ steps:
       - "--set-env-vars"
       - "COMMIT_SHA=$SHORT_SHA"
       - "--allow-unauthenticated"
+  - name: "python:3.11"
+    id: "healthz-smoke"
+    entrypoint: python
+    env:
+      - "MCP_URL=${_SERVICE_URL}/healthz"
+    args:
+      - "scripts/health_smoke.py"
 images:
   - "us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/${_SERVICE}:$SHORT_SHA"
