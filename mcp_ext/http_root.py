@@ -39,8 +39,19 @@ def mount_mcp_root(app: FastAPI) -> None:
 
     @transport.route("/")
     async def mcp_root(req: Request) -> Response:
+        # Make root usable as a simple health endpoint for orchestrators.
+        if req.method == "GET":
+            return JSONResponse({"status": "ok", "name": NAME, "version": VERSION})
+
+        if req.method == "OPTIONS":
+            return Response(status_code=200)
+
+        if req.method != "POST":
+            raise HTTPException(status_code=405, detail="Method not allowed")
+
         if API_KEY and req.headers.get("x-api-key") != API_KEY:
             raise HTTPException(status_code=401, detail="Unauthorized")
+
         return await transport.handle(req, server)
 
 def attach_healthz(app: FastAPI) -> None:
