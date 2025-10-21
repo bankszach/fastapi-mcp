@@ -1,60 +1,116 @@
 from __future__ import annotations
+
 import logging
 import os
-from fastapi import FastAPI, Request, Response, HTTPException
-from fastapi.responses import JSONResponse
+from typing import Any, Dict, List, Tuple
+
 from dotenv import load_dotenv
-try:
-    from mcp.server.fastapi import FastAPITransport  # type: ignore[attr-defined]
-except ModuleNotFoundError:  # pragma: no cover - depends on library version
-    FastAPITransport = None  # type: ignore[assignment]
+from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
+from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import ContentBlock
+from pydantic import BaseModel, Field, ValidationError
+
+from .policy import get_policy
 from .server import create_server
 
 load_dotenv()
+
 NAME = os.getenv("SERVER_NAME", "fastapi-mcp")
 VERSION = os.getenv("SERVER_VERSION", "0.1.0")
 API_KEY = os.getenv("API_KEY")
 logger = logging.getLogger(__name__)
 
+
+class ToolCallPayload(BaseModel):
+    tool: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+
+
+def _serialize_content(blocks: List[ContentBlock]) -> List[Dict[str, Any]]:
+    """Convert content blocks into JSON-serializable dictionaries."""
+    return [block.model_dump(mode="json") for block in blocks]
+
+
+def _format_response(
+    tool_name: str,
+    result: Tuple[List[ContentBlock], Dict[str, Any]]
+    | List[ContentBlock]
+    | Dict[str, Any]
+    | None,
+) -> Dict[str, Any]:
+    """Normalize tool results into a consistent response body."""
+    content_blocks: List[ContentBlock] = []
+    structured: Dict[str, Any] | None = None
+
+    if isinstance(result, tuple):
+        content_blocks, structured = result
+    elif isinstance(result, list):
+        content_blocks = result
+    elif isinstance(result, dict):
+        structured = result
+
+    body: Dict[str, Any] = {
+        "tool": tool_name,
+        "content": _serialize_content(content_blocks),
+    }
+
+    if structured is not None:
+        body["structured"] = structured
+
+    policy = get_policy(tool_name)
+    if policy is not None:
+        body["meta"] = {"policy": policy}
+
+    return body
+
+
 def mount_mcp_root(app: FastAPI) -> None:
-    """Mounts Streamable HTTP MCP at '/' without touching your existing SSE route."""
-    if FastAPITransport is None:
-        logger.warning(
-            "mcp.server.fastapi.FastAPITransport unavailable; registering fallback '/' handler"
-        )
+    """Expose a simple HTTP facade for MCP tools at the service root."""
+    server: FastMCP = create_server(NAME, VERSION)
 
-        @app.api_route("/", methods=["GET", "POST", "OPTIONS"])
-        async def mcp_http_unavailable(req: Request) -> JSONResponse:
-            status = 503
-            body = {
-                "error": "streamable_http_unavailable",
-                "message": "HTTP MCP transport requires a newer 'mcp' package.",
-            }
-            return JSONResponse(body, status_code=status)
+    @app.get("/")
+    async def root_status() -> Dict[str, Any]:
+        tools = await server.list_tools()
+        return {
+            "status": "ok",
+            "name": NAME,
+            "version": VERSION,
+            "tools": [tool.name for tool in tools],
+        }
 
-        return
+    @app.options("/")
+    async def root_options() -> Response:
+        return Response(status_code=status.HTTP_200_OK)
 
-    transport = FastAPITransport(app)
-    server = create_server(NAME, VERSION)
+    @app.post("/")
+    async def invoke_tool(payload: ToolCallPayload, request: Request) -> JSONResponse:
+        if API_KEY and request.headers.get("x-api-key") != API_KEY:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 
-    @transport.route("/")
-    async def mcp_root(req: Request) -> Response:
-        # Make root usable as a simple health endpoint for orchestrators.
-        if req.method == "GET":
-            return JSONResponse({"status": "ok", "name": NAME, "version": VERSION})
+        try:
+            result = await server.call_tool(payload.tool, payload.arguments or {})
+        except ToolError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        except ValidationError as exc:
+            logger.warning("Invalid arguments for tool %s: %s", payload.tool, exc)
+            return JSONResponse(
+                {"error": "invalid_arguments", "details": exc.errors()},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Unhandled error invoking %s", payload.tool)
+            return JSONResponse(
+                {"error": "tool_execution_failed", "message": str(exc)},
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
-        if req.method == "OPTIONS":
-            return Response(status_code=200)
+        response_body = _format_response(payload.tool, result)
+        return JSONResponse(response_body, status_code=status.HTTP_200_OK)
 
-        if req.method != "POST":
-            raise HTTPException(status_code=405, detail="Method not allowed")
-
-        if API_KEY and req.headers.get("x-api-key") != API_KEY:
-            raise HTTPException(status_code=401, detail="Unauthorized")
-
-        return await transport.handle(req, server)
 
 def attach_healthz(app: FastAPI) -> None:
     @app.get("/healthz")
-    async def healthz():
-        return JSONResponse({"status": "ok", "name": NAME, "version": VERSION})
+    async def healthz() -> Dict[str, Any]:
+        return {"status": "ok", "name": NAME, "version": VERSION}
